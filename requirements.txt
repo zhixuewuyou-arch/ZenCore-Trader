@@ -1,0 +1,5 @@
+streamlit
+akshare
+google-generativeai
+pandas
+plotly
