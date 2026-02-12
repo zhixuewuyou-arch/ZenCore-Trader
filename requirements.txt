@@ -1,6 +1,5 @@
 streamlit
-akshare
-efinance
-google-generativeai
 pandas
+requests
+google-generativeai
 plotly
