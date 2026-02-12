@@ -80,6 +80,7 @@ with tabs[0]:
     total_market_value = 0
     total_profit = 0
     
+    # 遍历持仓计算
     for code, info in st.session_state.portfolio.items():
         _, price = get_realtime_data(code)
         if price:
@@ -88,9 +89,20 @@ with tabs[0]:
             total_market_value += mv
             total_profit += profit
     
+    # --- 修复 ZeroDivisionError 的逻辑 ---
+    initial_investment = total_market_value - total_profit
+    
+    # 安全计算百分比
+    if initial_investment > 0:
+        profit_pct = (total_profit / initial_investment) * 100
+        profit_pct_str = f"{profit_pct:.2f}%"
+    else:
+        profit_pct_str = "0.00%"
+
+    # 显示指标
     col1.metric("总持仓市值", f"¥{total_market_value:,.2f}")
-    col2.metric("累计浮盈", f"¥{total_profit:,.2f}", f"{(total_profit/(total_market_value-total_profit)*100):.2f}%")
-    col3.metric("可用现金", "¥260,000.00") # 这里可以根据实际修改
+    col2.metric("累计浮盈", f"¥{total_profit:,.2f}", profit_pct_str)
+    col3.metric("可用现金", "¥260,000.00") 
     col4.metric("现金比例", "26.0%")
 
 # --- Tab 2: 右侧安检 ---
