@@ -1,11 +1,9 @@
 import streamlit as st
-import akshare as ak
-import efinance as ef
 import pandas as pd
+import requests
 import plotly.graph_objects as go
 import google.generativeai as genai
 import time
-import random
 
 # --- 1. 系统指令 ---
 SYSTEM_INSTRUCTION = """你是我专属的A股全能操盘手+进化导师。请严格按照用户提供的《交易成长之路》逻辑进行审计。"""
@@ -28,9 +26,9 @@ if api_key:
 
 if 'portfolio' not in st.session_state:
     st.session_state.portfolio = {
-        "688041": {"name": "海光信息", "cost": 224.97, "qty": 920},
-        "603019": {"name": "中科曙光", "cost": 102.45, "qty": 1400},
-        "300059": {"name": "东方财富", "cost": 25.00, "qty": 9200}
+        "688041": {"name": "海光信息", "cost": 224.97, "qty": 920, "mkt": "1"},
+        "603019": {"name": "中科曙光", "cost": 102.45, "qty": 1400, "mkt": "1"},
+        "300059": {"name": "东方财富", "cost": 25.00, "qty": 9200, "mkt": "0"}
     }
 
 for code, info in st.session_state.portfolio.items():
@@ -38,19 +36,17 @@ for code, info in st.session_state.portfolio.items():
         st.session_state.portfolio[code]['cost'] = st.number_input(f"成本", value=info['cost'], key=f"c_{code}")
         st.session_state.portfolio[code]['qty'] = st.number_input(f"持仓", value=int(info['qty']), key=f"q_{code}")
 
-# --- 4. 强韧数据引擎 (v1.5 解决云端连接中断) ---
+# --- 4. 核心数据引擎 (v1.6 直接调用底层API，无权限风险) ---
 @st.cache_data(ttl=120)
-def get_resilient_data(code):
-    # 尝试使用 efinance 引擎 (在云端更稳定)
+def get_api_data(code, mkt):
     try:
-        df = ef.stock.get_quote_history(code).tail(150)
-        if df.empty: raise ValueError("Empty Data")
+        # 东方财富底层 K 线接口
+        url = f"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={mkt}.{code}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt=1&end=20500101&lmt=120"
+        resp = requests.get(url, timeout=10).json()
+        data = resp['data']['klines']
         
-        # 统一字段名
-        df = df.rename(columns={
-            '日期': '日期', '开盘': '开盘', '收盘': '收盘', 
-            '最高': '最高', '最低': '最低', '成交量': '成交量'
-        })
+        df = pd.DataFrame([x.split(',') for x in data], columns=['日期','开盘','收盘','最高','最低','成交量','成交额','振幅','涨跌幅','涨跌额','换手率'])
+        df[['开盘','收盘','最高','最低','成交量']] = df[['开盘','收盘','最高','最低','成交量']].apply(pd.to_numeric)
         
         # 计算均线
         df['MA5'] = df['收盘'].rolling(5).mean()
@@ -60,22 +56,11 @@ def get_resilient_data(code):
         
         current_price = df['收盘'].iloc[-1]
         return df.tail(100), current_price
-    
-    except Exception as e:
-        # 如果 efinance 失败，尝试 akshare 的备用接口
-        try:
-            time.sleep(random.uniform(0.5, 1.5)) # 随机延迟防封
-            df = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq").tail(150)
-            df['MA5'] = df['收盘'].rolling(5).mean()
-            df['MA10'] = df['收盘'].rolling(10).mean()
-            df['MA20'] = df['收盘'].rolling(20).mean()
-            df['MA60'] = df['收盘'].rolling(60).mean()
-            return df.tail(100), df['收盘'].iloc[-1]
-        except:
-            return None, None
+    except:
+        return None, None
 
 # --- 5. 主界面 ---
-st.title("ZenCore AI 操盘手 v1.5")
+st.title("ZenCore AI 操盘手 v1.6")
 tabs = st.tabs(["📊 资产全景", "🏹 右侧安检", "🧠 导师审计"])
 
 # --- Tab 1: 资产全景 ---
@@ -83,18 +68,11 @@ with tabs[0]:
     col1, col2, col3, col4 = st.columns(4)
     total_mv, total_profit = 0.0, 0.0
     
-    # 增加重试逻辑
-    data_load_success = True
     for code, info in st.session_state.portfolio.items():
-        df, price = get_resilient_data(code)
+        df, price = get_api_data(code, info['mkt'])
         if price:
             total_mv += price * info['qty']
             total_profit += (price - info['cost']) * info['qty']
-        else:
-            data_load_success = False
-
-    if not data_load_success:
-        st.warning("⚠️ 部分数据源连接受限，正在尝试通过备用通道解析...")
     
     initial_inv = total_mv - total_profit
     profit_pct = (total_profit / initial_inv * 100) if initial_inv > 0 else 0.0
@@ -106,7 +84,8 @@ with tabs[0]:
 # --- Tab 2: 右侧安检 ---
 with tabs[1]:
     sel_code = st.selectbox("选择审计标的", list(st.session_state.portfolio.keys()))
-    df, price = get_resilient_data(sel_code)
+    info = st.session_state.portfolio[sel_code]
+    df, price = get_api_data(sel_code, info['mkt'])
     
     if df is not None:
         c_left, c_right = st.columns([3, 1])
@@ -119,7 +98,6 @@ with tabs[1]:
             for ma in ['MA5', 'MA10', 'MA20', 'MA60']:
                 fig.add_trace(go.Scatter(x=df['日期'], y=df[ma], line=dict(color=colors[ma], width=1), name=ma))
             
-            fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])]) 
             fig.update_layout(template="plotly_dark", height=500, margin=dict(l=10, r=10, t=10, b=10), xaxis_rangeslider_visible=False)
             st.plotly_chart(fig, use_container_width=True)
             
@@ -139,7 +117,7 @@ with tabs[1]:
             if check1 and check2: st.success("信号：右侧确认")
             else: st.warning("信号：保持静默")
     else:
-        st.error("❌ 无法连接到行情服务器。请尝试刷新页面或稍后再试。")
+        st.error("❌ 无法获取行情数据。")
 
 # --- Tab 3: 导师审计 ---
 with tabs[2]:
@@ -149,7 +127,7 @@ with tabs[2]:
         else:
             with st.spinner("导师正在穿透迷雾..."):
                 model = genai.GenerativeModel('gemini-3-flash-preview', system_instruction=SYSTEM_INSTRUCTION)
-                # 简化新闻获取，降低封禁风险
-                news = f"标的：{sel_code}，当前价格：{price}。请结合全维度大数据给出审计建议。"
-                response = model.generate_content(news)
+                # 构造审计上下文
+                audit_context = f"标的：{info['name']}，现价：{price}。请结合该股近期走势和AI算力行业逻辑给出审计建议。"
+                response = model.generate_content(audit_context)
                 st.markdown(response.text)
